@@ -3,105 +3,136 @@ import math
 import numpy as np
 import pytest
 
-from gsearch.align_nodes import create_annulus_mask
+from gsearch.align_nodes import make_annulus_mask
 
-# A shared reference point plus points chosen for their DISTANCE from pt, since
-# the mask depends only on distance-to-pt, never on position.
+# Q is centred near the origin, G at large positive coords (as in the real data),
+# so absolute position is meaningless: the mask must come only from each node's
+# distance to its own anchor after the anchors are aligned.
 #
-#   arr1 (rows)                 distance from pt (5, 5)
-#   (5.0, 8.0)                   3.0
-#   (9.0, 5.0)                   4.0
+#   Q_arr (rows)    dist from Q anchor (0, 0)
+#   (0.0, 0.0)       0.0    <- Q anchor (index 0)
+#   (3.0, 0.0)       3.0
+#   (0.0, 4.0)       4.0
 #
-#   arr2 (cols)                 distance from pt (5, 5)
-#   (5.0, 2.0)                   3.0    <- same dist as arr1[0], different angle
-#   (5.0, 9.0)                   4.0    <- same dist as arr1[1]
-#   (5.0, 7.0)                   2.0
-#   (30.0, 5.0)                 25.0    <- far from every arr1 distance
-PT = np.array([5.0, 5.0])
-ARR1 = np.array([[5.0, 8.0], [9.0, 5.0]])
-ARR2 = np.array([[5.0, 2.0], [5.0, 9.0], [5.0, 7.0], [30.0, 5.0]])
+#   G_arr (cols)    dist from G anchor (100, 100)
+#   (100.0, 100.0)   0.0    <- G anchor (index 0)
+#   (103.0, 100.0)   3.0    <- matches Q[1]
+#   (100.0, 104.0)   4.0    <- matches Q[2]
+#   (100.0, 102.0)   2.0
+#   (200.0, 100.0)  100.0   <- far from every Q distance
+Q_ARR = np.array([[0.0, 0.0], [3.0, 0.0], [0.0, 4.0]])
+G_ARR = np.array(
+    [[100.0, 100.0], [103.0, 100.0], [100.0, 104.0], [100.0, 102.0], [200.0, 100.0]]
+)
+Q_ANCHOR = 0
+G_ANCHOR = 0
 
 
 def brute_force_mask(
-    arr1: np.ndarray, arr2: np.ndarray, pt: np.ndarray, tol: float
+    Q_arr: np.ndarray,
+    G_arr: np.ndarray,
+    Q_anchor_idx: int,
+    G_anchor_idx: int,
+    tol: float,
 ) -> np.ndarray:
     """Annulus mask computed with plain Python loops, no broadcasting."""
-    mask = np.zeros((len(arr1), len(arr2)), dtype=bool)
-    for i, (ax, ay) in enumerate(arr1):
-        d1 = math.hypot(ax - pt[0], ay - pt[1])
-        for j, (bx, by) in enumerate(arr2):
-            d2 = math.hypot(bx - pt[0], by - pt[1])
+    qax, qay = Q_arr[Q_anchor_idx]
+    gax, gay = G_arr[G_anchor_idx]
+    mask = np.zeros((len(Q_arr), len(G_arr)), dtype=bool)
+    for i, (qx, qy) in enumerate(Q_arr):
+        d1 = math.hypot(qx - qax, qy - qay)
+        for j, (gx, gy) in enumerate(G_arr):
+            d2 = math.hypot(gx - gax, gy - gay)
             mask[i, j] = abs(d1 - d2) <= tol
     return mask
 
 
-class TestCreateAnnulusMask:
+class TestMakeAnnulusMask:
     def test_output_shape(self):
         # plan / do
-        mask = create_annulus_mask(ARR1, ARR2, PT, tol=0.5)
+        mask = make_annulus_mask(Q_ARR, G_ARR, Q_ANCHOR, G_ANCHOR, tol=0.5)
 
-        # one row per arr1 point, one column per arr2 point
-        assert mask.shape == (len(ARR1), len(ARR2))
+        # one row per Q node, one column per G node (anchors included)
+        assert mask.shape == (len(Q_ARR), len(G_ARR))
 
     def test_matches_brute_force(self):
         # plan
         tol = 0.5
 
         # do
-        mask = create_annulus_mask(ARR1, ARR2, PT, tol=tol)
+        mask = make_annulus_mask(Q_ARR, G_ARR, Q_ANCHOR, G_ANCHOR, tol=tol)
 
         # every entry agrees with an independent loop computation
-        assert np.array_equal(mask, brute_force_mask(ARR1, ARR2, PT, tol))
+        assert np.array_equal(
+            mask, brute_force_mask(Q_ARR, G_ARR, Q_ANCHOR, G_ANCHOR, tol)
+        )
 
-    def test_rotation_invariant_around_pt(self):
+    def test_translation_invariant(self):
+        # plan: shift all of Q by a constant; the function re-aligns the anchor
+        shifted_Q = Q_ARR + np.array([50.0, -20.0])
+
+        # do
+        mask = make_annulus_mask(shifted_Q, G_ARR, Q_ANCHOR, G_ANCHOR, tol=0.5)
+
+        # absolute Q position is meaningless: the mask is unchanged by the shift
+        baseline = make_annulus_mask(Q_ARR, G_ARR, Q_ANCHOR, G_ANCHOR, tol=0.5)
+        assert np.array_equal(mask, baseline)
+
+    def test_anchor_row_matches_near_g_anchor(self):
         # plan / do
-        mask = create_annulus_mask(ARR1, ARR2, PT, tol=0.0)
+        mask = make_annulus_mask(Q_ARR, G_ARR, Q_ANCHOR, G_ANCHOR, tol=0.5)
 
-        # arr2[0] sits at the same distance as arr1[0] but a different angle,
-        # yet still matches: the annulus is about distance, not position
-        assert mask[0, 0]
-        # likewise arr2[1] matches arr1[1] purely by shared distance
-        assert mask[1, 1]
+        # the Q anchor sits at distance 0, so its row is True exactly for the
+        # G nodes within tol of the G anchor (only the G anchor itself here)
+        expected = np.array([True, False, False, False, False])
+        assert np.array_equal(mask[Q_ANCHOR], expected)
 
     def test_boundary_is_inclusive(self):
-        # plan: arr1[0] is at distance 3, arr2[2] at distance 2 -> diff 1.0
+        # plan: Q[1] is at distance 3, G[3] at distance 2 -> diff 1.0
         tol = 1.0
 
         # do
-        mask = create_annulus_mask(ARR1, ARR2, PT, tol=tol)
+        mask = make_annulus_mask(Q_ARR, G_ARR, Q_ANCHOR, G_ANCHOR, tol=tol)
 
         # a pair whose distance difference equals tol exactly is True
-        assert mask[0, 2]
+        assert mask[1, 3]
 
     def test_tol_zero_requires_exact_distance(self):
         # plan / do
-        mask = create_annulus_mask(ARR1, ARR2, PT, tol=0.0)
+        mask = make_annulus_mask(Q_ARR, G_ARR, Q_ANCHOR, G_ANCHOR, tol=0.0)
 
         # only equal-distance pairs survive a zero tolerance
-        assert np.array_equal(mask, brute_force_mask(ARR1, ARR2, PT, tol=0.0))
-        # the distance-2 and distance-25 columns match neither arr1 point
-        assert not mask[:, 2].any()
+        assert np.array_equal(
+            mask, brute_force_mask(Q_ARR, G_ARR, Q_ANCHOR, G_ANCHOR, tol=0.0)
+        )
+        # the distance-2 and distance-100 columns match no Q node
         assert not mask[:, 3].any()
+        assert not mask[:, 4].any()
 
-    def test_point_outside_all_annuli_is_all_false(self):
-        # plan / do
-        mask = create_annulus_mask(ARR1, ARR2, PT, tol=0.5)
+    def test_nonzero_anchor_indices(self):
+        # plan: use Q[1] and G[1] as anchors (both at distance 3 from index 0),
+        # which are coincident after alignment, so index-0 rows/cols must match
+        mask = make_annulus_mask(Q_ARR, G_ARR, 1, 1, tol=0.0)
 
-        # arr2[3] is far from every arr1 distance, so its column is all False
-        assert not mask[:, 3].any()
+        # cross-checked against the brute force with the same anchor indices
+        assert np.array_equal(
+            mask, brute_force_mask(Q_ARR, G_ARR, 1, 1, tol=0.0)
+        )
+        # the two anchors coincide, so their mutual entry is True
+        assert mask[1, 1]
 
-    def test_empty_arr1_raises(self):
+    def test_empty_Q_arr_raises(self):
         # plan
         empty = np.empty((0, 2))
 
-        # do / test: an empty arr1 has no annuli to test against
-        with pytest.raises(ValueError, match="arr1"):
-            create_annulus_mask(empty, ARR2, PT, tol=0.5)
+        # do / test: an empty Q has no nodes to align
+        with pytest.raises(ValueError, match="Q_arr"):
+            make_annulus_mask(empty, G_ARR, Q_ANCHOR, G_ANCHOR, tol=0.5)
 
-    def test_empty_arr2_raises(self):
+    def test_empty_G_arr_raises(self):
         # plan
         empty = np.empty((0, 2))
 
-        # do / test: an empty arr2 has no points to place in the annuli
-        with pytest.raises(ValueError, match="arr2"):
-            create_annulus_mask(ARR1, empty, PT, tol=0.5)
+        # do / test: an empty G has no nodes to place in the annuli
+        with pytest.raises(ValueError, match="G_arr"):
+            make_annulus_mask(Q_ARR, empty, Q_ANCHOR, G_ANCHOR, tol=0.5)
