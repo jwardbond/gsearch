@@ -33,7 +33,7 @@ class SpatialGraphIndex:
 
         dists = np.linalg.norm(self.kdtree.data[idxs] - p, axis=1)
 
-        # query_ball_point sorts by index, so re-sort both lists by distance
+        # query_ball_poi`nt sorts by index, so re-sort both lists by distance
         order = np.argsort(dists)
         dists = dists[order]
         idxs = np.asarray(idxs)[order]
@@ -52,23 +52,3 @@ class SpatialGraphIndex:
         cropped_graph = self.graph.subgraph(neighbourhood).copy()
 
         return cropped_graph
-
-
-def distance_from_node(anchor_id: int, graph: nx.Graph) -> list[tuple[int, float]]:
-    """Get distances from one node to all other nodes in a graph."""
-    distances = []
-    for node_id, node_data in graph.nodes(data=True):
-        if node_id == anchor_id:
-            continue
-        distance = _euclidean_distance(graph.nodes[anchor_id], node_data)
-
-        distances.append((node_id, distance))
-
-    return distances
-
-
-def _euclidean_distance(node1: dict, node2: dict) -> float:
-    """Calculate Euclidean distance between two nodes."""
-    x1, y1 = node1["x"], node1["y"]
-    x2, y2 = node2["x"], node2["y"]
-    return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
