@@ -1,1 +1,1 @@
-- [ ] Handle multiple subgraphs within radius (crop should only return subgraph containing anchor)
+- [x] Handle multiple subgraphs within radius (crop should only return subgraph containing anchor)
