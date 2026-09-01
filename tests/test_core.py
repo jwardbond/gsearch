@@ -47,14 +47,12 @@ def brute_force_distances(anchor_id: int) -> dict[int, float]:
 
 class TestDistanceFromNode:
     def test_excludes_anchor(self, graph):
-        # plan / do
         result = _distance_from_node(50, graph)
 
         # the anchor node is not among its own distances
         assert 50 not in [node_id for node_id, _ in result]
 
     def test_covers_all_other_nodes(self, graph):
-        # plan / do
         result = _distance_from_node(50, graph)
 
         # every other node appears exactly once
@@ -63,7 +61,6 @@ class TestDistanceFromNode:
         assert len(node_ids) == len(set(node_ids))
 
     def test_distances_match_coordinates(self, graph):
-        # plan / do
         result = _distance_from_node(50, graph)
 
         # each distance matches its paired node, checked against a brute-force sweep
@@ -72,7 +69,6 @@ class TestDistanceFromNode:
             assert dist == pytest.approx(expected[node_id])
 
     def test_sorted_nearest_first(self, graph):
-        # plan / do
         result = _distance_from_node(50, graph)
 
         # distances come back in non-decreasing order
@@ -80,7 +76,6 @@ class TestDistanceFromNode:
         assert dists == sorted(dists)
 
     def test_known_distances(self, graph):
-        # plan / do
         result = _distance_from_node(50, graph)
 
         # exact hand-computed order and values from anchor 50 (33/7 tie, stable)
@@ -90,18 +85,15 @@ class TestDistanceFromNode:
         )
 
     def test_coincident_node_is_zero(self, graph):
-        # plan / do
         result = _distance_from_node(33, graph)
 
         # node 7 shares the anchor's coords, so its distance is zero (not excluded)
         assert dict(result)[7] == pytest.approx(0.0)
 
     def test_single_node_graph_returns_empty(self):
-        # plan
         g = nx.Graph()
         g.add_node(50, x=0.0, y=0.0)
 
-        # do
         result = _distance_from_node(50, g)
 
         # a lone anchor has no other nodes to measure

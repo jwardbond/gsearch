@@ -55,10 +55,8 @@ def brute_force_within(point: tuple[float, float], radius: float) -> set[int]:
 
 class TestSpatialGraphIndex:
     def test_init_copies_graph(self, graph):
-        # plan
         index = SpatialGraphIndex(graph)
 
-        # do
         graph.nodes[17]["x"] = 999.0
         graph.add_node(1234, x=1.0, y=1.0)
 
@@ -67,7 +65,6 @@ class TestSpatialGraphIndex:
         assert 1234 not in index.graph
 
     def test_node_ids_align_with_kdtree_rows(self, graph):
-        # plan / do
         index = SpatialGraphIndex(graph)
 
         # node_ids follows graph insertion order
@@ -78,10 +75,8 @@ class TestSpatialGraphIndex:
             assert tuple(index.kdtree.data[i]) == COORDS[node_id]
 
     def test_query_radius_distances_align_with_ids(self, index):
-        # plan
         point = (1.0, 1.0)
 
-        # do
         dists, node_ids = index.query_radius(point, 25.0)
 
         # every distance matches its paired node's own coordinates
@@ -91,10 +86,8 @@ class TestSpatialGraphIndex:
             assert dist == pytest.approx(math.hypot(x - point[0], y - point[1]))
 
     def test_query_radius_sorts_by_distance(self, index):
-        # plan
         point = (0.0, 0.0)
 
-        # do
         dists, node_ids = index.query_radius(point, 5.0)
 
         # results are ordered nearest first, not by node index
@@ -102,11 +95,9 @@ class TestSpatialGraphIndex:
         assert dists == pytest.approx([0.0, 3.0, 4.0, 5.0])
 
     def test_query_radius_returns_exactly_nodes_within_radius(self, index):
-        # plan
         point = (1.0, 2.0)
         radius = 6.0
 
-        # do
         _, node_ids = index.query_radius(point, radius)
 
         # membership matches a brute-force sweep of every node
@@ -116,10 +107,8 @@ class TestSpatialGraphIndex:
         assert len(node_ids) == len(set(node_ids))
 
     def test_query_radius_boundary_is_inclusive(self, index):
-        # plan
         point = (0.0, 0.0)
 
-        # do
         dists, node_ids = index.query_radius(point, 5.0)
 
         # node 8 sits at exactly r=5 and is included
@@ -127,7 +116,6 @@ class TestSpatialGraphIndex:
         assert dists[node_ids.index(8)] == pytest.approx(5.0)
 
     def test_query_radius_at_node_coords_includes_that_node(self, index):
-        # plan / do
         dists, node_ids = index.query_radius(COORDS[17], 1.0)
 
         # the node under the query point comes back first, at distance zero
@@ -135,7 +123,6 @@ class TestSpatialGraphIndex:
         assert dists[0] == pytest.approx(0.0)
 
     def test_query_radius_returns_coincident_nodes(self, index):
-        # plan / do
         dists, node_ids = index.query_radius((20.0, 20.0), 0.5)
 
         # nodes sharing identical coordinates are both returned
@@ -143,7 +130,6 @@ class TestSpatialGraphIndex:
         assert dists == pytest.approx([0.0, 0.0])
 
     def test_query_radius_no_hits_returns_two_empty_lists(self, index):
-        # plan / do
         dists, node_ids = index.query_radius((1000.0, 1000.0), 1.0)
 
         # an empty result is still an unpackable pair of lists
@@ -151,7 +137,6 @@ class TestSpatialGraphIndex:
         assert node_ids == []
 
     def test_make_crop_nodes(self, index):
-        # plan / do
         crop = index.make_crop(50, 5.0)
 
         # the crop holds exactly the nodes within the radius, anchor included
@@ -159,7 +144,6 @@ class TestSpatialGraphIndex:
         assert 50 in crop
 
     def test_make_crop_edges_are_induced(self, index):
-        # plan / do
         crop = index.make_crop(50, 5.0)
 
         # every edge with both endpoints inside is kept, including 17-8,
@@ -174,7 +158,6 @@ class TestSpatialGraphIndex:
         assert not crop.has_edge(2, 33)
 
     def test_make_crop_preserves_node_attributes(self, index):
-        # plan / do
         crop = index.make_crop(50, 5.0)
 
         # x/y attributes survive the crop unchanged
@@ -184,20 +167,16 @@ class TestSpatialGraphIndex:
             ]
 
     def test_make_crop_is_unaffected_by_later_source_edits(self, index):
-        # plan
         crop = index.make_crop(50, 5.0)
 
-        # do
         index.graph.nodes[17]["x"] = 999.0
 
         # the crop is a detached copy, not a view onto the indexed graph
         assert crop.nodes[17]["x"] == 0.0
 
     def test_make_crop_edits_do_not_affect_source(self, index):
-        # plan
         crop = index.make_crop(50, 5.0)
 
-        # do
         crop.nodes[17]["x"] = 999.0
         crop.add_node(1234, x=1.0, y=1.0)
 
@@ -206,7 +185,6 @@ class TestSpatialGraphIndex:
         assert 1234 not in index.graph
 
     def test_make_crop_radius_zero(self, index):
-        # plan / do
         crop = index.make_crop(50, 0.0)
 
         # only the anchor itself is within a zero radius
@@ -214,7 +192,6 @@ class TestSpatialGraphIndex:
         assert crop.number_of_edges() == 0
 
     def test_make_crop_radius_zero_keeps_coincident_nodes(self, index):
-        # plan / do
         crop = index.make_crop(33, 0.0)
 
         # a node sharing the anchor's coordinates is at distance zero too
@@ -222,8 +199,7 @@ class TestSpatialGraphIndex:
         assert crop.has_edge(33, 7)
 
     def test_make_crop_keeps_only_anchor_component(self):
-        # plan: node 100 sits within the radius of the anchor but is not
-        # edge-connected to it, so it forms a separate component in the crop
+        """Node 100 is within the radius but not edge-connected to the anchor."""
         g = nx.Graph()
         g.add_node(1, x=0.0, y=0.0)
         g.add_node(2, x=1.0, y=0.0)
@@ -231,7 +207,6 @@ class TestSpatialGraphIndex:
         g.add_edge(1, 2)
         index = SpatialGraphIndex(g)
 
-        # do
         crop = index.make_crop(1, 5.0)
 
         # only the anchor's connected component survives the crop
