@@ -1,5 +1,6 @@
 import math
 
+import networkx as nx
 import numpy as np
 import pytest
 
@@ -7,7 +8,8 @@ from gsearch.align_nodes import (
     _cross_signs,
     _make_annulus_mask,
     _make_candidates,
-    _prune_candidates,
+    _split_mask_by_handedness,
+    get_candidate_matches,
 )
 
 # Q is centred near the origin, G at large positive coords (as in the real data),
@@ -149,25 +151,30 @@ def as_set(mappings: list[dict[int, int]]) -> set[tuple[tuple[int, int], ...]]:
 
 
 class TestMakeCandidates:
+    # Distinct ids (not equal to their row/column indices) so the tests verify
+    # that results are translated from array positions back to node ids.
+    Q_IDS = [10, 20]
+    G_IDS = [100, 200, 300]
+
     def test_single_unique_mapping(self):
         # plan: each Q row matches exactly one, distinct G column
         mask = np.array([[True, False], [False, True]])
 
         # do
-        candidates = _make_candidates(mask)
+        candidates = _make_candidates((mask,), self.Q_IDS, self.G_IDS[:2])
 
-        # only the identity mapping is possible
-        assert candidates == [{0: 0, 1: 1}]
+        # only the identity mapping is possible, keyed by node id
+        assert candidates == [{10: 100, 20: 200}]
 
     def test_enumerates_all_injective_combinations(self):
         # plan: both rows match both columns
         mask = np.array([[True, True], [True, True]])
 
         # do
-        candidates = _make_candidates(mask)
+        candidates = _make_candidates((mask,), self.Q_IDS, self.G_IDS[:2])
 
         # both 1-to-1 assignments appear, and nothing else
-        assert as_set(candidates) == as_set([{0: 0, 1: 1}, {0: 1, 1: 0}])
+        assert as_set(candidates) == as_set([{10: 100, 20: 200}, {10: 200, 20: 100}])
         assert len(candidates) == 2
 
     def test_rejects_reused_g_index(self):
@@ -175,7 +182,7 @@ class TestMakeCandidates:
         mask = np.array([[True, False], [True, False]])
 
         # do
-        candidates = _make_candidates(mask)
+        candidates = _make_candidates((mask,), self.Q_IDS, self.G_IDS[:2])
 
         # a G node cannot be assigned to two Q nodes, so no mapping survives
         assert candidates == []
@@ -185,7 +192,7 @@ class TestMakeCandidates:
         mask = np.array([[False, False], [True, False]])
 
         # do
-        candidates = _make_candidates(mask)
+        candidates = _make_candidates((mask,), self.Q_IDS, self.G_IDS[:2])
 
         # one unmatchable Q node collapses the whole product to empty
         assert candidates == []
@@ -195,20 +202,33 @@ class TestMakeCandidates:
         mask = np.array([[True, True, False], [False, True, True]])
 
         # do
-        candidates = _make_candidates(mask)
+        candidates = _make_candidates((mask,), self.Q_IDS, self.G_IDS)
 
         # every injective pick across the two rows, cross-checked by hand
         assert as_set(candidates) == as_set(
-            [{0: 0, 1: 1}, {0: 0, 1: 2}, {0: 1, 1: 2}]
+            [{10: 100, 20: 200}, {10: 100, 20: 300}, {10: 200, 20: 300}]
         )
 
     def test_keys_cover_every_q_row(self):
         # plan / do
         mask = np.array([[True, False, True]])
-        candidates = _make_candidates(mask)
+        candidates = _make_candidates((mask,), [10], self.G_IDS)
 
-        # a single-row mask maps Q index 0 to each of its matching G columns
-        assert candidates == [{0: 0}, {0: 2}]
+        # a single-row mask maps Q id 10 to each of its matching G ids
+        assert candidates == [{10: 100}, {10: 300}]
+
+    def test_combines_every_mask_in_the_tuple(self):
+        # plan: a rotation and a reflection mask each contribute their own poses
+        rotation = np.array([[True, False], [False, True]])
+        reflection = np.array([[False, True], [True, False]])
+
+        # do
+        candidates = _make_candidates(
+            (rotation, reflection), self.Q_IDS, self.G_IDS[:2]
+        )
+
+        # results from both masks are concatenated in order
+        assert candidates == [{10: 100, 20: 200}, {10: 200, 20: 100}]
 
 
 class TestCrossSigns:
@@ -272,90 +292,187 @@ class TestCrossSigns:
         assert signs[3] == 1
 
 
-# Shared query for the prune tests: anchors at indices 0 and 1 define an axis
+# Shared handedness fixtures: the anchor (idx 0) -> alignment (idx 1) axis points
 # along +x, with one node on each side. Node signs about that axis are:
-#   Q0 (0, 0)   axis start -> 0
-#   Q1 (2, 0)   axis end   -> 0
-#   Q2 (1, 1)   left       -> +1
-#   Q3 (1, -1)  right      -> -1
-Q_SIGNED = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 1.0], [1.0, -1.0]])
-FULL_POSE = {0: 0, 1: 1, 2: 2, 3: 3}
+#   idx 0 (axis start) -> 0
+#   idx 1 (axis end)   -> 0
+#   idx 2 (left)       -> +1
+#   idx 3 (right)      -> -1
+# G repeats the same sign pattern in a far, translated frame.
+Q_HANDED = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 1.0], [1.0, -1.0]])
+G_HANDED = np.array(
+    [[100.0, 100.0], [102.0, 100.0], [101.0, 101.0], [101.0, 99.0]]
+)
 
 
-class TestPruneCandidates:
-    def test_keeps_pure_rotation(self):
-        # plan: G is Q rotated 90 CCW into a far frame -> orientation preserved
-        G_arr = np.array(
-            [[100.0, 100.0], [100.0, 102.0], [99.0, 101.0], [101.0, 101.0]]
+class TestSplitMaskByHandedness:
+    def test_outputs_keep_input_shape(self):
+        # plan
+        mask = np.ones((4, 4), dtype=bool)
+
+        # do
+        rotation, reflection = _split_mask_by_handedness(
+            mask, Q_HANDED, G_HANDED, 0, 1, 0, 1
+        )
+
+        # each output is a (len(Q), len(G)) mask like the input
+        assert rotation.shape == (4, 4)
+        assert reflection.shape == (4, 4)
+
+    def test_same_side_to_rotation_opposite_to_reflection(self):
+        # plan: a full mask so every pairing is classified purely by handedness
+        mask = np.ones((4, 4), dtype=bool)
+
+        # do
+        rotation, reflection = _split_mask_by_handedness(
+            mask, Q_HANDED, G_HANDED, 0, 1, 0, 1
+        )
+
+        # the left Q node keeps rotation on the same side, reflects the opposite
+        assert rotation[2, 2] and not rotation[2, 3]
+        assert reflection[2, 3] and not reflection[2, 2]
+        # the right Q node mirrors that pattern
+        assert rotation[3, 3] and not rotation[3, 2]
+        assert reflection[3, 2] and not reflection[3, 3]
+
+    def test_collinear_pairs_go_to_both_masks(self):
+        # plan: rows/cols 0 and 1 lie on the axis, so their sign product is 0
+        mask = np.ones((4, 4), dtype=bool)
+
+        # do
+        rotation, reflection = _split_mask_by_handedness(
+            mask, Q_HANDED, G_HANDED, 0, 1, 0, 1
+        )
+
+        # a collinear pairing (sign 0) is orientation-agnostic: it joins both masks
+        assert rotation[0].all()
+        assert reflection[0].all()
+
+    def test_masks_cover_input_overlapping_only_on_collinear(self):
+        # plan: a full mask, so the union and overlap are fixed by handedness alone
+        mask = np.ones((4, 4), dtype=bool)
+
+        # do
+        rotation, reflection = _split_mask_by_handedness(
+            mask, Q_HANDED, G_HANDED, 0, 1, 0, 1
+        )
+
+        # together the halves cover every input entry
+        assert np.array_equal(rotation | reflection, mask)
+        # they overlap exactly on collinear pairings (rows/cols 0 and 1)
+        expected_overlap = np.zeros((4, 4), dtype=bool)
+        expected_overlap[[0, 1], :] = True
+        expected_overlap[:, [0, 1]] = True
+        assert np.array_equal(rotation & reflection, expected_overlap)
+
+    def test_never_adds_matches_absent_from_input(self):
+        # plan: keep only a single same-side entry in the input mask
+        mask = np.zeros((4, 4), dtype=bool)
+        mask[2, 2] = True
+
+        # do
+        rotation, reflection = _split_mask_by_handedness(
+            mask, Q_HANDED, G_HANDED, 0, 1, 0, 1
+        )
+
+        # the split can only ever remove entries, never introduce them
+        assert rotation[2, 2]
+        assert rotation.sum() == 1
+        assert not reflection.any()
+
+
+def make_graph(coords, ids) -> nx.Graph:
+    """Build a coordinate-only nx.Graph; edges are irrelevant to alignment."""
+    g = nx.Graph()
+    for node_id, (x, y) in zip(ids, coords):
+        g.add_node(node_id, x=float(x), y=float(y))
+    return g
+
+
+# A scalene 3-4-5 right triangle: all pairwise distances differ, so the correct
+# correspondence is unique (no symmetry to spawn alternate valid poses). Query ids
+# are non-index values, so a returned mapping proves index -> node-id translation.
+QUERY_COORDS = np.array([[0.0, 0.0], [3.0, 0.0], [0.0, 4.0]])
+QUERY_IDS = [10, 20, 30]
+QUERY_ANCHOR = 10
+
+
+class TestGetCandidateMatches:
+    def test_finds_true_correspondence(self):
+        # plan: embed the triangle translated into a far frame, plus a lone decoy
+        Q = make_graph(QUERY_COORDS, QUERY_IDS)
+        g_coords = [[100.0, 100.0], [103.0, 100.0], [100.0, 104.0], [500.0, 500.0]]
+        G = make_graph(g_coords, [101, 102, 103, 104])
+
+        # do
+        matches = get_candidate_matches(Q, G, QUERY_ANCHOR, 101, tol=0.5)
+
+        # the real pose is recovered
+        assert {10: 101, 20: 102, 30: 103} in matches
+        # the distance-mismatched decoy is never assigned
+        assert all(104 not in pose.values() for pose in matches)
+
+    def test_returns_node_ids_not_indices(self):
+        # plan: same clean embedding; ids (10.., 101..) are not positional indices
+        Q = make_graph(QUERY_COORDS, QUERY_IDS)
+        G = make_graph(
+            [[100.0, 100.0], [103.0, 100.0], [100.0, 104.0]], [101, 102, 103]
         )
 
         # do
-        kept = _prune_candidates([FULL_POSE], Q_SIGNED, G_arr, 0, 1)
+        matches = get_candidate_matches(Q, G, QUERY_ANCHOR, 101, tol=0.5)
 
-        # every node keeps its side, so the pose survives
-        assert kept == [FULL_POSE]
+        # every mapping is keyed by Q node ids and valued by G node ids
+        assert matches
+        assert all(set(pose) <= {10, 20, 30} for pose in matches)
+        assert all(set(pose.values()) <= {101, 102, 103} for pose in matches)
 
-    def test_keeps_pure_reflection(self):
-        # plan: G is Q mirrored across the axis -> every side flips uniformly
-        G_arr = np.array(
-            [[100.0, 100.0], [102.0, 100.0], [101.0, 99.0], [101.0, 101.0]]
+    def test_invariant_to_rotation(self):
+        # plan: embed the triangle rotated 90 CCW ((x,y) -> (-y,x)) into the far frame
+        Q = make_graph(QUERY_COORDS, QUERY_IDS)
+        G = make_graph(
+            [[100.0, 100.0], [100.0, 103.0], [96.0, 100.0]], [101, 102, 103]
         )
 
         # do
-        kept = _prune_candidates([FULL_POSE], Q_SIGNED, G_arr, 0, 1)
+        matches = get_candidate_matches(Q, G, QUERY_ANCHOR, 101, tol=0.5)
 
-        # a uniform reflection is still a single global choice, so it is kept
-        assert kept == [FULL_POSE]
+        # distances and orientation are preserved, so the pose survives
+        assert {10: 101, 20: 102, 30: 103} in matches
 
-    def test_drops_mixed_handedness(self):
-        # plan: both matched G nodes sit on the +side, so one agrees and one flips
-        G_arr = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 1.0], [1.0, 2.0]])
-
-        # do
-        kept = _prune_candidates([FULL_POSE], Q_SIGNED, G_arr, 0, 1)
-
-        # inconsistent handedness is geometrically impossible, so the pose is dropped
-        assert kept == []
-
-    def test_keeps_when_all_collinear(self):
-        # plan: a Q whose non-anchor nodes lie on the axis -> no handedness info
-        Q_collinear = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 0.0], [0.5, 0.0]])
-        G_arr = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 1.0], [1.0, 2.0]])
-
-        # do
-        kept = _prune_candidates([FULL_POSE], Q_collinear, G_arr, 0, 1)
-
-        # with no informative nodes there is nothing to reject, so it is kept
-        assert kept == [FULL_POSE]
-
-    def test_empty_input_returns_empty(self):
-        # plan / do
-        kept = _prune_candidates([], Q_SIGNED, Q_SIGNED, 0, 1)
-
-        # no poses in, no poses out
-        assert kept == []
-
-    def test_filters_within_one_batch(self):
-        # plan: G holds a rotation set (0-3) and a mixed set (4-7)
-        G_arr = np.array(
-            [
-                [100.0, 100.0],
-                [100.0, 102.0],
-                [99.0, 101.0],
-                [101.0, 101.0],
-                [0.0, 0.0],
-                [2.0, 0.0],
-                [1.0, 1.0],
-                [1.0, 2.0],
-            ]
-        )
-        rotation_pose = {0: 0, 1: 1, 2: 2, 3: 3}
-        mixed_pose = {0: 4, 1: 5, 2: 6, 3: 7}
-
-        # do
-        kept = _prune_candidates(
-            [rotation_pose, mixed_pose], Q_SIGNED, G_arr, 0, 1
+    def test_finds_reflected_match(self):
+        # plan: embed the triangle mirrored across the axis ((x,y) -> (x,-y))
+        Q = make_graph(QUERY_COORDS, QUERY_IDS)
+        G = make_graph(
+            [[100.0, 100.0], [103.0, 100.0], [100.0, 96.0]], [101, 102, 103]
         )
 
-        # only the consistent pose survives, and its position is preserved
-        assert kept == [rotation_pose]
+        # do
+        matches = get_candidate_matches(Q, G, QUERY_ANCHOR, 101, tol=0.5)
+
+        # the reflection half of the handedness split keeps the flipped pose
+        assert {10: 101, 20: 102, 30: 103} in matches
+
+    def test_query_larger_than_target_returns_empty(self):
+        # plan: three query nodes cannot each claim a distinct node in a two-node G
+        Q = make_graph(QUERY_COORDS, QUERY_IDS)
+        G = make_graph([[100.0, 100.0], [103.0, 100.0]], [101, 102])
+
+        # do
+        matches = get_candidate_matches(Q, G, QUERY_ANCHOR, 101, tol=0.5)
+
+        # too few target nodes: no pose is possible
+        assert matches == []
+
+    def test_unmatchable_query_node_returns_empty(self):
+        # plan: G has the anchor and a distance-3 node but nothing near distance 4
+        Q = make_graph(QUERY_COORDS, QUERY_IDS)
+        G = make_graph(
+            [[100.0, 100.0], [103.0, 100.0], [200.0, 100.0]], [101, 102, 103]
+        )
+
+        # do
+        matches = get_candidate_matches(Q, G, QUERY_ANCHOR, 101, tol=0.5)
+
+        # the distance-4 query node has an empty annulus, so nothing matches
+        assert matches == []

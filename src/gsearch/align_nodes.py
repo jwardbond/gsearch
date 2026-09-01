@@ -43,6 +43,7 @@ def get_candidate_matches(
     G_arr = np.array([[G.nodes[n]["x"], G.nodes[n]["y"]] for n in G_ids])
 
     Q_anchor_idx = Q_ids.index(Q_anchor)
+    G_anchor_idx = G_ids.index(G_anchor)
 
     # Every node in Q needs at least 1 node in G
     if len(Q_arr) > len(G_arr):
@@ -52,7 +53,7 @@ def get_candidate_matches(
         Q_arr,
         G_arr,
         Q_anchor_idx,
-        G_ids.index(G_anchor),
+        G_anchor_idx,
         tol,
     )
 
@@ -60,34 +61,37 @@ def get_candidate_matches(
     if not anchor_mask.any(axis=1).all():
         return []
 
-    # Pick the least populated annulus, excluding anchor, and use to align second node
+    # Pick the least populated annulus, excluding the anchor, and use it to align the
+    # alignment node.
     counts = anchor_mask.sum(axis=1).astype(float)
     counts[Q_anchor_idx] = np.inf
-    second_q_idx = int(np.argmin(counts))
+    Q_alignment_idx = int(np.argmin(counts))
 
     candidate_matches = []
-    for second_g_idx in np.where(anchor_mask[second_q_idx])[0]:
-        second_g_idx = int(second_g_idx)
-        second_mask = _make_annulus_mask(
+    for G_alignment_idx in np.where(anchor_mask[Q_alignment_idx])[0]:
+        G_alignment_idx = int(G_alignment_idx)
+        alignment_mask = _make_annulus_mask(
             Q_arr,
             G_arr,
-            second_q_idx,
-            second_g_idx,
+            Q_alignment_idx,
+            G_alignment_idx,
             tol,
         )
 
-        combined_mask = anchor_mask & second_mask
-        if not combined_mask.any(axis=1).all():
-            continue
+        combined_mask = anchor_mask & alignment_mask
+
+        split_masks = _split_mask_by_handedness(
+            combined_mask,
+            Q_arr,
+            G_arr,
+            Q_anchor_idx,
+            Q_alignment_idx,
+            G_anchor_idx,
+            G_alignment_idx,
+        )
 
         candidate_matches.extend(
-            _prune_candidates(
-                _make_candidates(combined_mask),
-                Q_arr,
-                G_arr,
-                Q_anchor_idx,
-                second_q_idx,
-            )
+            _make_candidates(split_masks, Q_ids, G_ids),
         )
     return candidate_matches
 
@@ -95,15 +99,15 @@ def get_candidate_matches(
 def _make_annulus_mask(
     Q_arr: np.ndarray,
     G_arr: np.ndarray,
-    Q_anchor_idx: int,
-    G_anchor_idx: int,
+    Q_ref_idx: int,
+    G_ref_idx: int,
     tol: float,
 ) -> np.ndarray:
     """Align Q to G and create annulus masks for each node in Q.
 
     An annulus mask is the mask created by:
-        1. Aligning Q_arr to G_arr by translating the anchor node in Q to the anchor node in G.
-        1. Rotating Q_arr around the anchor point, tracing the vertices as they make a circle
+        1. Aligning Q_arr to G_arr by translating the reference node in Q to the reference node in G.
+        1. Rotating Q_arr around the reference point, tracing the vertices as they make a circle
         2. Buffering each trace by tol, creating an annulus.
         3. Marking the points within arr2 that fall within each annulus.
 
@@ -112,29 +116,28 @@ def _make_annulus_mask(
     Args:
         Q_arr: Coordinates of the query nodes, shape (len(Q), 2).
         G_arr: Coordinates of the target nodes, shape (len(G), 2).
-        Q_anchor_idx: Row index of the anchor node in Q_arr.
-        G_anchor_idx: Row index of the candidate anchor node in G_arr.
+        Q_ref_idx: Row index of the reference node in Q_arr (anchor or alignment node).
+        G_ref_idx: Row index of the candidate reference node in G_arr.
         tol: The maximum allowed distance between corresponding nodes in Q and G.
 
     Returns:
         A boolean array of shape (len(Q_arr), len(G_arr)). Each row is a node in Q,
-        each column a node in G (anchors included). An entry is True if, after aligning
-        the anchors, the distance from the anchor to the Q node is within tol of the
-        distance from the anchor to the G node.
+        each column a node in G (reference nodes included). An entry is True if, after
+        aligning the reference nodes, the distance from the reference to the Q node is
+        within tol of the distance from the reference to the G node.
     """
     if len(Q_arr) == 0:
         raise ValueError("Q_arr must contain at least one point")
     if len(G_arr) == 0:
         raise ValueError("G_arr must contain at least one point")
 
-    # Transform Q to align with anchor
-    Q_pt = Q_arr[Q_anchor_idx]
-    G_pt = G_arr[G_anchor_idx]
-    offset = G_pt - Q_pt
-    Q_arr = Q_arr + offset
+    # Distances are translation-invariant, so aligning the reference nodes is implicit:
+    # measure each node's distance from its own reference node.
+    Q_ref_pt = Q_arr[Q_ref_idx]
+    G_ref_pt = G_arr[G_ref_idx]
 
-    Q_dists = np.linalg.norm(Q_arr - G_pt, axis=1)
-    G_dists = np.linalg.norm(G_arr - G_pt, axis=1)
+    Q_dists = np.linalg.norm(Q_arr - Q_ref_pt, axis=1)
+    G_dists = np.linalg.norm(G_arr - G_ref_pt, axis=1)
 
     diff_dists = np.abs(Q_dists[:, None] - G_dists[None, :])
     dist_matches = diff_dists <= tol
@@ -142,57 +145,65 @@ def _make_annulus_mask(
     return dist_matches
 
 
-def _make_candidates(mask: np.ndarray) -> list[dict[int, int]]:
-    """Convert a boolean mask into unique 1-to-1 candidate pose mappings.
+def _make_candidates(
+    masks: tuple[np.ndarray, ...],
+    Q_ids: list[int],
+    G_ids: list[int],
+) -> list[dict[int, int]]:
+    """Convert boolean masks into unique 1-to-1 candidate pose mappings.
+
+    Args:
+        masks: Boolean arrays of shape (len(Q), len(G)); each row a Q node, each column a G node.
+        Q_ids: Node ids of Q, indexed by row.
+        G_ids: Node ids of G, indexed by column.
 
     Returns:
-        A list of dictionaries, where each dictionary maps indices of Q to indices of G.
+        A list of dictionaries, where each dictionary maps node ids in Q to node ids in G.
     """
-    row_matches = [np.flatnonzero(row).tolist() for row in mask]
-
     candidates = []
-    n_q = len(mask)
-    for combo in itertools.product(*row_matches):
-        if len(set(combo)) == n_q:
-            candidates.append(dict(enumerate(combo)))
+    for mask in masks:
+        if not mask.any(axis=1).all():
+            continue
+
+        row_matches = [np.flatnonzero(row).tolist() for row in mask]
+        n_q = len(mask)
+        for combo in itertools.product(*row_matches):
+            if len(set(combo)) == n_q:
+                candidates.append(
+                    {Q_ids[qi]: G_ids[gi] for qi, gi in enumerate(combo)},
+                )
 
     return candidates
 
 
-def _prune_candidates(candidate_matches, Q_arr, G_arr, q_axis_a, q_axis_b):
-    """Drop poses whose node handedness is not a single global choice.
+def _split_mask_by_handedness(
+    mask: np.ndarray,
+    Q_arr: np.ndarray,
+    G_arr: np.ndarray,
+    Q_anchor_idx: int,
+    Q_alignment_idx: int,
+    G_anchor_idx: int,
+    G_alignment_idx: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split into (rotation_mask, reflection_mask) by orientation about the axes."""
+    Q_signs = _cross_signs(Q_arr, Q_anchor_idx, Q_alignment_idx)  # (n_q,)
+    G_signs = _cross_signs(G_arr, G_anchor_idx, G_alignment_idx)  # (n_g,)
 
-    A rigid match must preserve orientation consistently. Relative to the axis
-    through the two Q anchor nodes (and the matching axis in G), every
-    non-collinear node must land on a consistent side: either all sides agree
-    (a pure rotation) or all flip (a pure reflection).
-    """
-    # Q axis is constant across every pose in this batch
-    q_signs = _cross_signs(Q_arr, q_axis_a, q_axis_b)
-
-    kept = []
-    for pose in candidate_matches:
-        q_idx = np.fromiter(pose.keys(), dtype=int, count=len(pose))
-        g_idx = np.fromiter(pose.values(), dtype=int, count=len(pose))
-
-        # G axis is the pair matched to the two Q anchors
-        g_signs = _cross_signs(G_arr, pose[q_axis_a], pose[q_axis_b])[g_idx]
-        q_pose_signs = q_signs[q_idx]
-
-        # Collinear nodes sit on the axis and carry no handedness information
-        informative = (q_pose_signs != 0) & (g_signs != 0)
-        if not informative.any():
-            kept.append(pose)
-            continue
-
-        agree = q_pose_signs[informative] == g_signs[informative]
-        if agree.all() or (~agree).all():
-            kept.append(pose)
-
-    return kept
+    products = Q_signs[:, None] * G_signs[None, :]
+    # Collinear nodes (sign 0, always including the anchor and alignment nodes) are
+    # orientation-agnostic, so they belong to both masks: same side -> rotation,
+    # opposite side -> reflection, on-axis -> both.
+    same = products >= 0
+    flip = products <= 0
+    return mask & same, mask & flip
 
 
-def _cross_signs(arr, i0, i1, atol=1e-9):
+def _cross_signs(
+    arr: np.ndarray,
+    i0: int,
+    i1: int,
+    atol: float = 1e-9,
+) -> np.ndarray:
     """Signed side (+1/-1/0) of every point about the directed i0->i1 axis."""
     axis = arr[i1] - arr[i0]
     rel = arr - arr[i0]
