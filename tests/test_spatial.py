@@ -220,3 +220,20 @@ class TestSpatialGraphIndex:
         # a node sharing the anchor's coordinates is at distance zero too
         assert set(crop.nodes()) == {33, 7}
         assert crop.has_edge(33, 7)
+
+    def test_make_crop_keeps_only_anchor_component(self):
+        # plan: node 100 sits within the radius of the anchor but is not
+        # edge-connected to it, so it forms a separate component in the crop
+        g = nx.Graph()
+        g.add_node(1, x=0.0, y=0.0)
+        g.add_node(2, x=1.0, y=0.0)
+        g.add_node(100, x=2.0, y=0.0)
+        g.add_edge(1, 2)
+        index = SpatialGraphIndex(g)
+
+        # do
+        crop = index.make_crop(1, 5.0)
+
+        # only the anchor's connected component survives the crop
+        assert set(crop.nodes()) == {1, 2}
+        assert 100 not in crop

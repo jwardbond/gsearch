@@ -51,4 +51,8 @@ class SpatialGraphIndex:
         # Create a subgraph with the nearby nodes
         cropped_graph = self.graph.subgraph(neighbourhood).copy()
 
+        # Keep only the component that contains the anchor node.
+        component = nx.node_connected_component(cropped_graph, node_id)
+        cropped_graph = cropped_graph.subgraph(component).copy()
+
         return cropped_graph
