@@ -35,58 +35,64 @@ def get_candidate_matches(
         A list of candidate poses, where each pose is a dictionary mapping node IDs in Q to
         node IDs in G.
     """
-    # Convert to np arrays
-    Q_map = list(Q.nodes)
-    G_map = list(G.nodes)
+    # Convert to np array
+    Q_ids = list(Q.nodes)
+    G_ids = list(G.nodes)
 
-    Q_arr = np.array([[Q.nodes[n]["x"], Q.nodes[n]["y"]] for n in Q_map])
-    G_arr = np.array([[G.nodes[n]["x"], G.nodes[n]["y"]] for n in G_map])
+    Q_arr = np.array([[Q.nodes[n]["x"], Q.nodes[n]["y"]] for n in Q_ids])
+    G_arr = np.array([[G.nodes[n]["x"], G.nodes[n]["y"]] for n in G_ids])
+
+    Q_anchor_idx = Q_ids.index(Q_anchor)
 
     # Every node in Q needs at least 1 node in G
     if len(Q_arr) > len(G_arr):
         return []
 
-    anmsk = make_annulus_mask(
+    anchor_mask = _make_annulus_mask(
         Q_arr,
         G_arr,
-        Q_map.index(Q_anchor),
-        G_map.index(G_anchor),
+        Q_anchor_idx,
+        G_ids.index(G_anchor),
         tol,
     )
 
     # Every Q vertex needs at least one G vertex in its annulus
-    if not anmsk.any(axis=1).all():
+    if not anchor_mask.any(axis=1).all():
         return []
 
     # Pick the least populated annulus, excluding anchor, and use to align second node
-    counts = anmsk.sum(axis=1).astype(float)
-    counts[Q_map.index(Q_anchor)] = np.inf
-    q_idx = np.argmin(counts)
-    q_idx = int(q_idx)
+    counts = anchor_mask.sum(axis=1).astype(float)
+    counts[Q_anchor_idx] = np.inf
+    second_q_idx = int(np.argmin(counts))
 
     candidate_matches = []
-    for g_idx in np.where(anmsk[q_idx])[0]:
-        g_idx = int(g_idx)
-        second_anmsk = make_annulus_mask(
+    for second_g_idx in np.where(anchor_mask[second_q_idx])[0]:
+        second_g_idx = int(second_g_idx)
+        second_mask = _make_annulus_mask(
             Q_arr,
             G_arr,
-            q_idx,
-            g_idx,
+            second_q_idx,
+            second_g_idx,
             tol,
         )
 
-        anmsk_combined = anmsk & second_anmsk
-        if not anmsk_combined.any(axis=1).all():
+        combined_mask = anchor_mask & second_mask
+        if not combined_mask.any(axis=1).all():
             continue
 
         candidate_matches.extend(
-            make_candidate_combinations(anmsk_combined, Q_map, G_map)
+            _prune_candidates(
+                _make_candidates(combined_mask),
+                Q_arr,
+                G_arr,
+                Q_anchor_idx,
+                second_q_idx,
+            )
         )
-
     return candidate_matches
 
 
-def make_annulus_mask(
+def _make_annulus_mask(
     Q_arr: np.ndarray,
     G_arr: np.ndarray,
     Q_anchor_idx: int,
@@ -124,38 +130,72 @@ def make_annulus_mask(
     # Transform Q to align with anchor
     Q_pt = Q_arr[Q_anchor_idx]
     G_pt = G_arr[G_anchor_idx]
-    transform = G_pt - Q_pt
-    Q_arr = Q_arr + transform
+    offset = G_pt - Q_pt
+    Q_arr = Q_arr + offset
 
-    dists1 = np.linalg.norm(Q_arr - G_pt, axis=1)
-    dists2 = np.linalg.norm(G_arr - G_pt, axis=1)
+    Q_dists = np.linalg.norm(Q_arr - G_pt, axis=1)
+    G_dists = np.linalg.norm(G_arr - G_pt, axis=1)
 
-    diff_dists = np.abs(dists1[:, None] - dists2[None, :])
+    diff_dists = np.abs(Q_dists[:, None] - G_dists[None, :])
     dist_matches = diff_dists <= tol
 
     return dist_matches
 
 
-def make_candidate_combinations(
-    mask: np.ndarray,
-    Q_map: list[int],
-    G_map: list[int],
-) -> list[dict[int, int]]:
-    """Convert a boolean mask of candidate matches into a list of possible combinations.
-
-    When a node in Q has multiple candidate matches in G, this function generates all possible combinations of matches.
-
-    Args:
-        mask: A boolean array of shape (len(Q_map), len(G_map)). Each row is a node in Q,
-            each column a node in G (anchors included).
-        Q_map: List of node IDs in Q corresponding to the rows of mask.
-        G_map: List of node IDs in G corresponding to the columns of mask.
+def _make_candidates(mask: np.ndarray) -> list[dict[int, int]]:
+    """Convert a boolean mask into unique 1-to-1 candidate pose mappings.
 
     Returns:
-        A list of dictionaries, where each dictionary represents a possible combination of candidate matches.
-
+        A list of dictionaries, where each dictionary maps indices of Q to indices of G.
     """
-    g_arr = np.array(G_map)
-    row_matches = [g_arr[np.flatnonzero(row)] for row in mask]
+    row_matches = [np.flatnonzero(row).tolist() for row in mask]
 
-    return [dict(zip(Q_map, combo)) for combo in itertools.product(*row_matches)]
+    candidates = []
+    n_q = len(mask)
+    for combo in itertools.product(*row_matches):
+        if len(set(combo)) == n_q:
+            candidates.append(dict(enumerate(combo)))
+
+    return candidates
+
+
+def _prune_candidates(candidate_matches, Q_arr, G_arr, q_axis_a, q_axis_b):
+    """Drop poses whose node handedness is not a single global choice.
+
+    A rigid match must preserve orientation consistently. Relative to the axis
+    through the two Q anchor nodes (and the matching axis in G), every
+    non-collinear node must land on a consistent side: either all sides agree
+    (a pure rotation) or all flip (a pure reflection).
+    """
+    # Q axis is constant across every pose in this batch
+    q_signs = _cross_signs(Q_arr, q_axis_a, q_axis_b)
+
+    kept = []
+    for pose in candidate_matches:
+        q_idx = np.fromiter(pose.keys(), dtype=int, count=len(pose))
+        g_idx = np.fromiter(pose.values(), dtype=int, count=len(pose))
+
+        # G axis is the pair matched to the two Q anchors
+        g_signs = _cross_signs(G_arr, pose[q_axis_a], pose[q_axis_b])[g_idx]
+        q_pose_signs = q_signs[q_idx]
+
+        # Collinear nodes sit on the axis and carry no handedness information
+        informative = (q_pose_signs != 0) & (g_signs != 0)
+        if not informative.any():
+            kept.append(pose)
+            continue
+
+        agree = q_pose_signs[informative] == g_signs[informative]
+        if agree.all() or (~agree).all():
+            kept.append(pose)
+
+    return kept
+
+
+def _cross_signs(arr, i0, i1, atol=1e-9):
+    """Signed side (+1/-1/0) of every point about the directed i0->i1 axis."""
+    axis = arr[i1] - arr[i0]
+    rel = arr - arr[i0]
+    cross = axis[0] * rel[:, 1] - axis[1] * rel[:, 0]
+    cross[np.abs(cross) < atol] = 0.0
+    return np.sign(cross)
