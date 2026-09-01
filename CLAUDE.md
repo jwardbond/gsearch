@@ -24,8 +24,8 @@ No linter or formatter is configured.
 ### Test conventions
 
 - One test file per module (`tests/test_spatial.py`). Tests for a function are grouped in a class named after it; when the function is already a method, the class covers the owning class instead (`TestSpatialGraphIndex` covers all of its methods).
-- Each test body follows **plan / do / test**, marked with `# plan` and `# do` comments (collapse to a single `# plan / do` when setup is one line). Exactly one "do" — the call under test — per test function.
-- Multiple asserts per test are fine. Precede each assert, or each group of related asserts, with a comment under ten words saying what it checks. No `# test` marker; those comments are the test section.
+- Each test body follows a single **plan / do / test** flow, but without `# plan` / `# do` / `# test` marker comments. Exactly one "do" — the call under test — per test function.
+- If the intent isn't obvious from the test name, open with a short one-line docstring. Precede each assert, or each group of related asserts, with a comment under ten words saying what it checks.
 
 ### Running the CLI
 
