@@ -27,6 +27,11 @@ No linter or formatter is configured.
 - Each test body follows a single **plan / do / test** flow, but without `# plan` / `# do` / `# test` marker comments. Exactly one "do" — the call under test — per test function.
 - If the intent isn't obvious from the test name, open with a short one-line docstring. Precede each assert, or each group of related asserts, with a comment under ten words saying what it checks.
 
+#### Proposing a test plan first
+
+- **Always present a test plan and get approval before writing any test code.** Ask again if the approved plan changes materially.
+- Present the plan as: (1) a short description of the shared fixtures/setup the tests build on, (2) a **table with columns `Test name | Plan (setup) | Do | Test (asserts)`**, one row per planned test, where the "Test" cell paraphrases the assert comments, and (3) a separate list of *suggested extra* tests beyond what was asked, so the user can accept or drop each. Call out anything you deliberately left out of scope and why.
+
 ### Running the CLI
 
 `pyproject.toml` declares `gsearch = "gsearch:main"`, which resolves to the hello-world stub in `__init__.py` — **not** the real command. The actual Click command is `gsearch.cli:gsearch`:
