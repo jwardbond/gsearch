@@ -1,11 +1,7 @@
-import logging
-import math
 from collections.abc import Iterator
 
 import networkx as nx
 import numpy as np
-
-logger = logging.getLogger(__name__)
 
 # TODO I currently compute the distance profile of Q every time. This is constant, so I could optimize.
 
@@ -39,15 +35,6 @@ def get_candidate_matches(
         A list of candidate poses, where each pose is a dictionary mapping node IDs in Q to
         node IDs in G.
     """
-    logger.debug(
-        "get_candidate_matches: |Q|=%d |G|=%d Q_anchor=%s G_anchor=%s tol=%s",
-        Q.number_of_nodes(),
-        G.number_of_nodes(),
-        Q_anchor,
-        G_anchor,
-        tol,
-    )
-
     # Convert to np array
     Q_ids = list(Q.nodes)
     G_ids = list(G.nodes)
@@ -60,9 +47,6 @@ def get_candidate_matches(
 
     # Every node in Q needs at least 1 node in G
     if len(Q_arr) > len(G_arr):
-        logger.debug(
-            "No matches: |Q|=%d > |G|=%d", len(Q_arr), len(G_arr)
-        )
         return []
 
     anchor_mask = _make_annulus_mask(
@@ -75,10 +59,6 @@ def get_candidate_matches(
 
     # Every Q vertex needs at least one G vertex in its annulus
     if not anchor_mask.any(axis=1).all():
-        empty_rows = np.flatnonzero(~anchor_mask.any(axis=1)).tolist()
-        logger.debug(
-            "No matches: Q rows with empty anchor annulus: %s", empty_rows
-        )
         return []
 
     # Pick the least populated annulus, excluding the anchor, and use it to align the
@@ -86,22 +66,11 @@ def get_candidate_matches(
     counts = anchor_mask.sum(axis=1).astype(float)
     counts[Q_anchor_idx] = np.inf
     Q_alignment_idx = int(np.argmin(counts))
-    logger.debug(
-        "Alignment node: Q_alignment_idx=%d with %d G candidates",
-        Q_alignment_idx,
-        int(counts[Q_alignment_idx]),
-    )
 
     candidate_matches = []
     G_alignment_candidates = np.where(anchor_mask[Q_alignment_idx])[0]
-    for i, G_alignment_idx in enumerate(G_alignment_candidates):
+    for G_alignment_idx in G_alignment_candidates:
         G_alignment_idx = int(G_alignment_idx)
-        logger.debug(
-            "Alignment loop %d/%d: G_alignment_idx=%d",
-            i + 1,
-            len(G_alignment_candidates),
-            G_alignment_idx,
-        )
         alignment_mask = _make_annulus_mask(
             Q_arr,
             G_arr,
@@ -123,14 +92,8 @@ def get_candidate_matches(
         )
 
         new_matches = _make_candidates(split_masks, Q_ids, G_ids)
-        logger.debug(
-            "G_alignment_idx=%d yielded %d candidate poses",
-            G_alignment_idx,
-            len(new_matches),
-        )
         candidate_matches.extend(new_matches)
 
-    logger.debug("get_candidate_matches: %d total candidate poses", len(candidate_matches))
     return candidate_matches
 
 
@@ -199,26 +162,16 @@ def _make_candidates(
         A list of dictionaries, where each dictionary maps node ids in Q to node ids in G.
     """
     candidates = []
-    for mask_idx, mask in enumerate(masks):
+    for mask in masks:
         if not mask.any(axis=1).all():
             continue
 
         row_matches = [np.flatnonzero(row).tolist() for row in mask]
-        product_size = math.prod(len(r) for r in row_matches)
 
-        n_before = len(candidates)
         for combo in _injective_assignments(row_matches):
             candidates.append(
                 {Q_ids[qi]: G_ids[gi] for qi, gi in enumerate(combo)},
             )
-        logger.debug(
-            "_make_candidates: mask %d, per-row match counts %s, "
-            "%d injective poses (full product would be %d)",
-            mask_idx,
-            [len(r) for r in row_matches],
-            len(candidates) - n_before,
-            product_size,
-        )
 
     return candidates
 

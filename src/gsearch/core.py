@@ -34,9 +34,7 @@ def run_gsearch(Q: nx.Graph, G: nx.Graph, tol: float, k: int) -> list:
         )
 
         for match in matches:
-            logger.debug("align_and_score called for anchor %s", G_anchor_id)
             result = align_and_score(Q, G_crop, match, tol)
-            logger.debug("align_and_score done for anchor %s", G_anchor_id)
 
             if result is None:
                 continue
