@@ -47,7 +47,7 @@ Fixing the entry point to `gsearch.cli:gsearch` is a reasonable change if you to
 Four modules under `src/gsearch/`:
 
 - `cli.py` — Click command; loads `QUERY` and `GRAPH` paths, delegates to `run_gsearch`.
-- `file_utils.py` — `load_graph(path)` reads the JSON graph format into an `nx.Graph` with `x`/`y` node attributes. (Replaces the removed `load.py`.)
+- `io.py` — `load_graph(path)` reads the JSON graph format into an `nx.Graph` with `x`/`y` node attributes. (Replaces the removed `load.py`.)
 - `spatial.py` — `SpatialGraphIndex` wraps a graph in a scipy `KDTree` over node coordinates; `query_radius` returns nearby nodes nearest-first, `make_crop` returns the induced subgraph within a radius of a node. Module-level `distance_from_node` gives Euclidean distances from one node to all others.
 - `core.py` — the matching pipeline.
 

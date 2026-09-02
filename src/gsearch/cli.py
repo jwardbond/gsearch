@@ -1,9 +1,11 @@
+import logging
 from pathlib import Path
 
 import click
 
 from gsearch.core import run_gsearch
 from gsearch.io import load_graph
+from gsearch.log import configure_logging
 
 
 @click.command()
@@ -24,7 +26,22 @@ from gsearch.io import load_graph
     show_default=True,
     help="Number of results to return.",
 )
-def gsearch(query, graph, tol, k):
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Enable debug logging.",
+)
+@click.option(
+    "--log-file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write logs to this file instead of stderr.",
+)
+def gsearch(query, graph, tol, k, verbose, log_file):
+    if verbose or log_file:
+        configure_logging(logging.DEBUG if verbose else logging.INFO, logfile=log_file)
+
     Q = load_graph(query)
     G = load_graph(graph)
 

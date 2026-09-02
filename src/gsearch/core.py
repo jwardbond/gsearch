@@ -1,8 +1,12 @@
+import logging
+
 import networkx as nx
 
 from gsearch.align_edges import align_and_score
 from gsearch.align_nodes import get_candidate_matches
 from gsearch.spatial_graph_index import SpatialGraphIndex
+
+logger = logging.getLogger(__name__)
 
 
 def run_gsearch(Q: nx.Graph, G: nx.Graph, tol: float, k: int) -> list:
@@ -14,15 +18,25 @@ def run_gsearch(Q: nx.Graph, G: nx.Graph, tol: float, k: int) -> list:
 
     # Build list of candidate anchors in G
     candidate_anchors = _get_candidate_anchors(Q_anchor_id, Q, G)
+    logger.debug("Found %d candidate anchors", len(candidate_anchors))
 
     # Create possible matches around anchor, align, and score
     alignments = []
     for G_anchor_id, _ in candidate_anchors:
         G_crop = G_index.make_crop(G_anchor_id, Q_radius + tol)
+
+        logger.debug("get_candidate_matches called for anchor %s", G_anchor_id)
         matches = get_candidate_matches(Q, G_crop, Q_anchor_id, G_anchor_id, tol)
+        logger.debug(
+            "get_candidate_matches done for anchor %s: %d matches",
+            G_anchor_id,
+            len(matches),
+        )
 
         for match in matches:
+            logger.debug("align_and_score called for anchor %s", G_anchor_id)
             result = align_and_score(Q, G_crop, match, tol)
+            logger.debug("align_and_score done for anchor %s", G_anchor_id)
 
             if result is None:
                 continue
@@ -31,6 +45,7 @@ def run_gsearch(Q: nx.Graph, G: nx.Graph, tol: float, k: int) -> list:
 
     alignments = sorted(alignments, key=lambda x: x[0], reverse=True)
 
+    k = min(k, len(alignments))
     return alignments[:k]
 
 
