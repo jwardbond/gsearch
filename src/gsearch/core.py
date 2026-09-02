@@ -29,7 +29,9 @@ def run_gsearch(Q: nx.Graph, G: nx.Graph, tol: float, k: int) -> list:
 
             alignments.append(result)
 
-    return alignments
+    alignments = sorted(alignments, key=lambda x: x[0], reverse=True)
+
+    return alignments[:k]
 
 
 def _get_radius(Q: nx.Graph, anchor_id: int) -> float:

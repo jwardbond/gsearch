@@ -3,7 +3,7 @@ from pathlib import Path
 import click
 
 from gsearch.core import run_gsearch
-from gsearch.file_utils import load_graph
+from gsearch.io import load_graph
 
 
 @click.command()
