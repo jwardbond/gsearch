@@ -1,10 +1,10 @@
-import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+from matplotlib import animation
 from matplotlib.animation import FuncAnimation
 from matplotlib.axes import Axes
-from matplotlib.patches import Annulus
+from matplotlib.patches import Annulus, Circle, Polygon
 from pyvis.network import Network
 
 
@@ -17,9 +17,22 @@ def vis_static(
     alpha: float = 1.0,
     with_labels: bool = True,
     gridlines: bool = False,
+    buffer: float | None = None,
+    buffer_color: str = "lightpink",
 ) -> None:
-    """Visualize the graph using matplotlib."""
+    """Visualize the graph using matplotlib.
+
+    Args:
+        buffer: If given, draw the region within this distance of any edge (the
+            graph's Minkowski dilation by a disc) beneath the graph, as capsules
+            with circular end caps. Handy for eyeballing a tolerance ``tol``.
+        buffer_color: Fill color of the buffer region.
+    """
     pos = {i: (G.nodes[i]["x"], G.nodes[i]["y"]) for i in G.nodes}
+
+    if buffer is not None:
+        _draw_buffer(ax, pos, G.edges, buffer, buffer_color)
+
     nx.draw(
         G,
         pos,
@@ -31,6 +44,17 @@ def vis_static(
         with_labels=with_labels,
     )
 
+    if buffer is not None and pos:
+        # nx.draw autoscales to nodes only, so pad the view to hold the buffer.
+        xs = [x for x, _ in pos.values()]
+        ys = [y for _, y in pos.values()]
+        ax.set_xlim(min(xs) - buffer, max(xs) + buffer)
+        ax.set_ylim(min(ys) - buffer, max(ys) + buffer)
+
+    # Equal aspect so x/y units are the same length; otherwise nx.draw stretches
+    # the graph to fill the axes and the geometry reads wrong.
+    ax.set_aspect("equal")
+
     if gridlines:
         # nx.draw turns the axis off; re-enable ticks so the grid is visible.
         ax.set_axis_on()
@@ -38,11 +62,46 @@ def vis_static(
         ax.grid(True)
 
 
+def _draw_buffer(
+    ax: Axes,
+    pos: dict[int, tuple[float, float]],
+    edges,
+    buffer: float,
+    color: str,
+) -> None:
+    """Draw the region within ``buffer`` of any edge as round-capped capsules.
+
+    Each node contributes a disc of radius ``buffer`` (the circular end caps) and
+    each edge a rectangle of half-width ``buffer`` along its length; their union is
+    the graph's dilation by a disc. Patches are opaque and same-colored so overlaps
+    read uniformly, and sit at ``zorder=0`` so the graph draws on top.
+    """
+    for x, y in pos.values():
+        ax.add_patch(Circle((x, y), buffer, color=color, linewidth=0, zorder=0))
+
+    for u, v in edges:
+        (x1, y1), (x2, y2) = pos[u], pos[v]
+        dx, dy = x2 - x1, y2 - y1
+        length = (dx * dx + dy * dy) ** 0.5
+        if length == 0:
+            continue
+        # Perpendicular offset of magnitude ``buffer``.
+        ox, oy = -dy / length * buffer, dx / length * buffer
+        corners = [
+            (x1 + ox, y1 + oy),
+            (x2 + ox, y2 + oy),
+            (x2 - ox, y2 - oy),
+            (x1 - ox, y1 - oy),
+        ]
+        ax.add_patch(Polygon(corners, closed=True, color=color, linewidth=0, zorder=0))
+
+
 def vis_annulus(
     G: nx.Graph,
     ax: Axes,
     anchor: int,
     width: float,
+    nodes: list[int] | None = None,
     node_color: str = "lightblue",
     edge_color: str = "black",
     node_size: int = 200,
@@ -51,16 +110,18 @@ def vis_annulus(
 ) -> None:
     """Draw G with the annuli that ``_make_annulus_mask`` builds around an anchor node.
 
-    Each non-anchor node sits at some distance ``r`` from the anchor. The mask accepts
+    Each selected node sits at some distance ``r`` from the anchor. The mask accepts
     G nodes whose distance to the reference falls within ``width`` of ``r``; this draws
     that acceptance band as a ring of radius ``r`` and half-width ``width``, one per
-    node, each in a distinct color, then draws G on top via ``vis_static``.
+    selected node, each in a distinct color, then draws G on top via ``vis_static``.
 
     Args:
         G: The graph to visualize.
         ax: The matplotlib axis to draw on.
         anchor: Node id of the anchor the annuli are centered on.
         width: The tolerance (half-width) of each annulus, in coordinate units.
+        nodes: Node ids to draw an annulus for. The anchor is skipped if included.
+            Defaults to every non-anchor node in G.
         node_color: Color of the drawn nodes.
         edge_color: Color of the drawn edges.
         node_size: Size of the drawn nodes.
@@ -69,9 +130,12 @@ def vis_annulus(
     """
     ax_x, ax_y = G.nodes[anchor]["x"], G.nodes[anchor]["y"]
 
+    if nodes is None:
+        nodes = list(G.nodes)
+
     radii = [
         ((G.nodes[n]["x"] - ax_x) ** 2 + (G.nodes[n]["y"] - ax_y) ** 2) ** 0.5
-        for n in G.nodes
+        for n in nodes
         if n != anchor
     ]
     max_r = _draw_annuli(ax, (ax_x, ax_y), radii, width, alpha)
@@ -85,10 +149,13 @@ def vis_annulus(
         with_labels=with_labels,
     )
 
-    # Patches don't drive autoscale, so size the view to hold the largest ring.
+    # Patches don't drive autoscale, so size the view to hold the largest ring
+    # and every node (rings may be smaller than G's extent when nodes is a subset).
+    xs = [G.nodes[n]["x"] for n in G.nodes]
+    ys = [G.nodes[n]["y"] for n in G.nodes]
     limit = max_r + width
-    ax.set_xlim(ax_x - limit, ax_x + limit)
-    ax.set_ylim(ax_y - limit, ax_y + limit)
+    ax.set_xlim(min(ax_x - limit, *xs), max(ax_x + limit, *xs))
+    ax.set_ylim(min(ax_y - limit, *ys), max(ax_y + limit, *ys))
     ax.set_aspect("equal")
 
 
@@ -147,9 +214,7 @@ def vis_result(
 
     # G: all edges gray, then subgraph edges overdrawn black.
     nx.draw_networkx_edges(G, G_pos, ax=ax, edge_color="lightgray", width=1.0)
-    nx.draw_networkx_edges(
-        subgraph, G_pos, ax=ax, edge_color="black", width=1.5
-    )
+    nx.draw_networkx_edges(subgraph, G_pos, ax=ax, edge_color="black", width=1.5)
     nx.draw_networkx_nodes(
         G, G_pos, ax=ax, node_color=g_node_color, node_size=node_size
     )
@@ -263,14 +328,19 @@ def _draw_annuli(
 ) -> float:
     """Draw one ``[r - width, r + width]`` ring per radius, each a distinct color.
 
+    Rings are colored by a sequential colormap keyed to radius, so color tracks
+    distance from the center predictably (dark = nearest, bright = farthest).
+
     Returns the largest radius drawn, so callers can size the axis view.
     """
     cx, cy = center
-    cmap = plt.get_cmap("hsv", max(len(radii), 1))
+    cmap = plt.get_cmap("viridis")
 
-    max_r = 0.0
-    for i, r in enumerate(radii):
-        max_r = max(max_r, r)
+    max_r = max(radii, default=0.0)
+    # Larger rings first so smaller ones draw on top and aren't occluded.
+    for r in sorted(radii, reverse=True):
+        # Normalize each radius to [0, 1] over the spread so color tracks distance.
+        frac = r / max_r if max_r > 0 else 0.0
         outer = r + width
         # Annulus requires 0 < ring_width <= outer, so clamp when r < width.
         ring_width = min(2 * width, outer)
@@ -279,7 +349,7 @@ def _draw_annuli(
                 (cx, cy),
                 outer,
                 ring_width,
-                color=cmap(i),
+                color=cmap(frac),
                 alpha=alpha,
                 zorder=0,
             )
